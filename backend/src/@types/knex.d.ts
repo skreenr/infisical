@@ -98,6 +98,9 @@ import {
   TIdentityGcpAuths,
   TIdentityGcpAuthsInsert,
   TIdentityGcpAuthsUpdate,
+  TIdentityJwtAuths,
+  TIdentityJwtAuthsInsert,
+  TIdentityJwtAuthsUpdate,
   TIdentityKubernetesAuths,
   TIdentityKubernetesAuthsInsert,
   TIdentityKubernetesAuthsUpdate,
@@ -199,7 +202,13 @@ import {
   TProjectSlackConfigs,
   TProjectSlackConfigsInsert,
   TProjectSlackConfigsUpdate,
+  TProjectSplitBackfillIds,
+  TProjectSplitBackfillIdsInsert,
+  TProjectSplitBackfillIdsUpdate,
   TProjectsUpdate,
+  TProjectTemplates,
+  TProjectTemplatesInsert,
+  TProjectTemplatesUpdate,
   TProjectUserAdditionalPrivilege,
   TProjectUserAdditionalPrivilegeInsert,
   TProjectUserAdditionalPrivilegeUpdate,
@@ -311,6 +320,9 @@ import {
   TSuperAdmin,
   TSuperAdminInsert,
   TSuperAdminUpdate,
+  TTotpConfigs,
+  TTotpConfigsInsert,
+  TTotpConfigsUpdate,
   TTrustedIps,
   TTrustedIpsInsert,
   TTrustedIpsUpdate,
@@ -584,6 +596,11 @@ declare module "knex/types/tables" {
       TIdentityOidcAuthsInsert,
       TIdentityOidcAuthsUpdate
     >;
+    [TableName.IdentityJwtAuth]: KnexOriginal.CompositeTableType<
+      TIdentityJwtAuths,
+      TIdentityJwtAuthsInsert,
+      TIdentityJwtAuthsUpdate
+    >;
     [TableName.IdentityUaClientSecret]: KnexOriginal.CompositeTableType<
       TIdentityUaClientSecrets,
       TIdentityUaClientSecretsInsert,
@@ -817,6 +834,17 @@ declare module "knex/types/tables" {
       TExternalGroupOrgRoleMappings,
       TExternalGroupOrgRoleMappingsInsert,
       TExternalGroupOrgRoleMappingsUpdate
+    >;
+    [TableName.ProjectTemplates]: KnexOriginal.CompositeTableType<
+      TProjectTemplates,
+      TProjectTemplatesInsert,
+      TProjectTemplatesUpdate
+    >;
+    [TableName.TotpConfig]: KnexOriginal.CompositeTableType<TTotpConfigs, TTotpConfigsInsert, TTotpConfigsUpdate>;
+    [TableName.ProjectSplitBackfillIds]: KnexOriginal.CompositeTableType<
+      TProjectSplitBackfillIds,
+      TProjectSplitBackfillIdsInsert,
+      TProjectSplitBackfillIdsUpdate
     >;
   }
 }

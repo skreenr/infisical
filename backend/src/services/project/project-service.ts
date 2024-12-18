@@ -1,13 +1,14 @@
 import { ForbiddenError } from "@casl/ability";
 import slugify from "@sindresorhus/slugify";
 
-import { OrgMembershipRole, ProjectMembershipRole, ProjectVersion, TProjectEnvironments } from "@app/db/schemas";
+import { ProjectMembershipRole, ProjectType, ProjectVersion, TProjectEnvironments } from "@app/db/schemas";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { OrgPermissionActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service";
 import { ProjectPermissionActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
+import { TProjectTemplateServiceFactory } from "@app/ee/services/project-template/project-template-service";
+import { InfisicalProjectTemplate } from "@app/ee/services/project-template/project-template-types";
 import { TKeyStoreFactory } from "@app/keystore/keystore";
-import { isAtLeastAsPrivileged } from "@app/lib/casl";
 import { infisicalSymmetricEncypt } from "@app/lib/crypto/encryption";
 import { BadRequestError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
 import { groupBy } from "@app/lib/fn";
@@ -94,7 +95,7 @@ type TProjectServiceFactoryDep = {
   orgDAL: Pick<TOrgDALFactory, "findOne">;
   keyStore: Pick<TKeyStoreFactory, "deleteItem">;
   projectBotDAL: Pick<TProjectBotDALFactory, "create">;
-  projectRoleDAL: Pick<TProjectRoleDALFactory, "find">;
+  projectRoleDAL: Pick<TProjectRoleDALFactory, "find" | "insertMany">;
   kmsService: Pick<
     TKmsServiceFactory,
     | "updateProjectSecretManagerKmsKey"
@@ -104,6 +105,7 @@ type TProjectServiceFactoryDep = {
     | "getProjectSecretManagerKmsKeyId"
     | "deleteInternalKms"
   >;
+  projectTemplateService: TProjectTemplateServiceFactory;
 };
 
 export type TProjectServiceFactory = ReturnType<typeof projectServiceFactory>;
@@ -134,7 +136,8 @@ export const projectServiceFactory = ({
   kmsService,
   projectBotDAL,
   projectSlackConfigDAL,
-  slackIntegrationDAL
+  slackIntegrationDAL,
+  projectTemplateService
 }: TProjectServiceFactoryDep) => {
   /*
    * Create workspace. Make user the admin
@@ -145,13 +148,15 @@ export const projectServiceFactory = ({
     actorOrgId,
     actorAuthMethod,
     workspaceName,
+    workspaceDescription,
     slug: projectSlug,
     kmsKeyId,
     tx: trx,
-    createDefaultEnvs = true
+    createDefaultEnvs = true,
+    template = InfisicalProjectTemplate.Default,
+    type = ProjectType.SecretManager
   }: TCreateProjectDTO) => {
     const organization = await orgDAL.findOne({ id: actorOrgId });
-
     const { permission, membership: orgMembership } = await permissionService.getOrgPermission(
       actor,
       actorId,
@@ -183,9 +188,26 @@ export const projectServiceFactory = ({
         }
       }
 
+      let projectTemplate: Awaited<ReturnType<typeof projectTemplateService.findProjectTemplateByName>> | null = null;
+
+      switch (template) {
+        case InfisicalProjectTemplate.Default:
+          projectTemplate = null;
+          break;
+        default:
+          projectTemplate = await projectTemplateService.findProjectTemplateByName(template, {
+            id: actorId,
+            orgId: organization.id,
+            type: actor,
+            authMethod: actorAuthMethod
+          });
+      }
+
       const project = await projectDAL.create(
         {
           name: workspaceName,
+          type,
+          description: workspaceDescription,
           orgId: organization.id,
           slug: projectSlug || slugify(`${workspaceName}-${alphaNumericNanoId(4)}`),
           kmsSecretManagerKeyId: kmsKeyId,
@@ -210,7 +232,24 @@ export const projectServiceFactory = ({
 
       // set default environments and root folder for provided environments
       let envs: TProjectEnvironments[] = [];
-      if (createDefaultEnvs) {
+      if (projectTemplate) {
+        envs = await projectEnvDAL.insertMany(
+          projectTemplate.environments.map((env) => ({ ...env, projectId: project.id })),
+          tx
+        );
+        await folderDAL.insertMany(
+          envs.map(({ id }) => ({ name: ROOT_FOLDER_NAME, envId: id, version: 1 })),
+          tx
+        );
+        await projectRoleDAL.insertMany(
+          projectTemplate.packedRoles.map((role) => ({
+            ...role,
+            permissions: JSON.stringify(role.permissions),
+            projectId: project.id
+          })),
+          tx
+        );
+      } else if (createDefaultEnvs) {
         envs = await projectEnvDAL.insertMany(
           DEFAULT_PROJECT_ENVS.map((el, i) => ({ ...el, projectId: project.id, position: i + 1 })),
           tx
@@ -331,20 +370,6 @@ export const projectServiceFactory = ({
           });
         }
 
-        // Get the role permission for the identity
-        const { permission: rolePermission, role: customRole } = await permissionService.getOrgPermissionByRole(
-          OrgMembershipRole.Member,
-          organization.id
-        );
-
-        // Identity has to be at least a member in order to create projects
-        const hasPrivilege = isAtLeastAsPrivileged(permission, rolePermission);
-        if (!hasPrivilege)
-          throw new ForbiddenRequestError({
-            message: "Failed to add identity to project with more privileged role"
-          });
-        const isCustomRole = Boolean(customRole);
-
         const identityProjectMembership = await identityProjectDAL.create(
           {
             identityId: actorId,
@@ -356,8 +381,7 @@ export const projectServiceFactory = ({
         await identityProjectMembershipRoleDAL.create(
           {
             projectMembershipId: identityProjectMembership.id,
-            role: isCustomRole ? ProjectMembershipRole.Custom : ProjectMembershipRole.Admin,
-            customRoleId: customRole?.id
+            role: ProjectMembershipRole.Admin
           },
           tx
         );
@@ -407,11 +431,22 @@ export const projectServiceFactory = ({
     return deletedProject;
   };
 
-  const getProjects = async ({ actorId, includeRoles, actorAuthMethod, actorOrgId }: TListProjectsDTO) => {
-    const workspaces = await projectDAL.findAllProjects(actorId);
+  const getProjects = async ({
+    actorId,
+    includeRoles,
+    actorAuthMethod,
+    actorOrgId,
+    type = ProjectType.SecretManager
+  }: TListProjectsDTO) => {
+    const workspaces = await projectDAL.findAllProjects(actorId, actorOrgId, type);
 
     if (includeRoles) {
-      const { permission } = await permissionService.getUserOrgPermission(actorId, actorOrgId, actorAuthMethod);
+      const { permission } = await permissionService.getUserOrgPermission(
+        actorId,
+        actorOrgId,
+        actorAuthMethod,
+        actorOrgId
+      );
 
       // `includeRoles` is specifically used by organization admins when inviting new users to the organizations to avoid looping redundant api calls.
       ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Create, OrgPermissionSubjects.Member);
@@ -459,6 +494,7 @@ export const projectServiceFactory = ({
 
     const updatedProject = await projectDAL.updateById(project.id, {
       name: update.name,
+      description: update.description,
       autoCapitalization: update.autoCapitalization
     });
     return updatedProject;
@@ -657,11 +693,19 @@ export const projectServiceFactory = ({
     actor
   }: TListProjectCasDTO) => {
     const project = await projectDAL.findProjectByFilter(filter);
+    let projectId = project.id;
+    const certManagerProjectFromSplit = await projectDAL.getProjectFromSplitId(
+      projectId,
+      ProjectType.CertificateManager
+    );
+    if (certManagerProjectFromSplit) {
+      projectId = certManagerProjectFromSplit.id;
+    }
 
     const { permission } = await permissionService.getProjectPermission(
       actor,
       actorId,
-      project.id,
+      projectId,
       actorAuthMethod,
       actorOrgId
     );
@@ -673,7 +717,7 @@ export const projectServiceFactory = ({
 
     const cas = await certificateAuthorityDAL.find(
       {
-        projectId: project.id,
+        projectId,
         ...(status && { status }),
         ...(friendlyName && { friendlyName }),
         ...(commonName && { commonName })
@@ -699,18 +743,27 @@ export const projectServiceFactory = ({
     actor
   }: TListProjectCertsDTO) => {
     const project = await projectDAL.findProjectByFilter(filter);
+    let projectId = project.id;
+    const certManagerProjectFromSplit = await projectDAL.getProjectFromSplitId(
+      projectId,
+      ProjectType.CertificateManager
+    );
+    if (certManagerProjectFromSplit) {
+      projectId = certManagerProjectFromSplit.id;
+    }
 
-    const { permission } = await permissionService.getProjectPermission(
+    const { permission, ForbidOnInvalidProjectType } = await permissionService.getProjectPermission(
       actor,
       actorId,
-      project.id,
+      projectId,
       actorAuthMethod,
       actorOrgId
     );
+    ForbidOnInvalidProjectType(ProjectType.CertificateManager);
 
     ForbiddenError.from(permission).throwUnlessCan(ProjectPermissionActions.Read, ProjectPermissionSub.Certificates);
 
-    const cas = await certificateAuthorityDAL.find({ projectId: project.id });
+    const cas = await certificateAuthorityDAL.find({ projectId });
 
     const certificates = await certificateDAL.find(
       {
@@ -724,7 +777,7 @@ export const projectServiceFactory = ({
     );
 
     const count = await certificateDAL.countCertificatesInProject({
-      projectId: project.id,
+      projectId,
       friendlyName,
       commonName
     });
@@ -739,19 +792,29 @@ export const projectServiceFactory = ({
    * Return list of (PKI) alerts configured for project
    */
   const listProjectAlerts = async ({
-    projectId,
+    projectId: preSplitProjectId,
     actor,
     actorId,
     actorAuthMethod,
     actorOrgId
   }: TListProjectAlertsDTO) => {
-    const { permission } = await permissionService.getProjectPermission(
+    let projectId = preSplitProjectId;
+    const certManagerProjectFromSplit = await projectDAL.getProjectFromSplitId(
+      projectId,
+      ProjectType.CertificateManager
+    );
+    if (certManagerProjectFromSplit) {
+      projectId = certManagerProjectFromSplit.id;
+    }
+
+    const { permission, ForbidOnInvalidProjectType } = await permissionService.getProjectPermission(
       actor,
       actorId,
       projectId,
       actorAuthMethod,
       actorOrgId
     );
+    ForbidOnInvalidProjectType(ProjectType.CertificateManager);
 
     ForbiddenError.from(permission).throwUnlessCan(ProjectPermissionActions.Read, ProjectPermissionSub.PkiAlerts);
 
@@ -766,19 +829,28 @@ export const projectServiceFactory = ({
    * Return list of PKI collections for project
    */
   const listProjectPkiCollections = async ({
-    projectId,
+    projectId: preSplitProjectId,
     actor,
     actorId,
     actorAuthMethod,
     actorOrgId
   }: TListProjectAlertsDTO) => {
-    const { permission } = await permissionService.getProjectPermission(
+    let projectId = preSplitProjectId;
+    const certManagerProjectFromSplit = await projectDAL.getProjectFromSplitId(
+      projectId,
+      ProjectType.CertificateManager
+    );
+    if (certManagerProjectFromSplit) {
+      projectId = certManagerProjectFromSplit.id;
+    }
+    const { permission, ForbidOnInvalidProjectType } = await permissionService.getProjectPermission(
       actor,
       actorId,
       projectId,
       actorAuthMethod,
       actorOrgId
     );
+    ForbidOnInvalidProjectType(ProjectType.CertificateManager);
 
     ForbiddenError.from(permission).throwUnlessCan(ProjectPermissionActions.Read, ProjectPermissionSub.PkiCollections);
 
@@ -793,19 +865,29 @@ export const projectServiceFactory = ({
    * Return list of certificate templates for project
    */
   const listProjectCertificateTemplates = async ({
-    projectId,
+    projectId: preSplitProjectId,
     actorId,
     actorOrgId,
     actorAuthMethod,
     actor
   }: TListProjectCertificateTemplatesDTO) => {
-    const { permission } = await permissionService.getProjectPermission(
+    let projectId = preSplitProjectId;
+    const certManagerProjectFromSplit = await projectDAL.getProjectFromSplitId(
+      projectId,
+      ProjectType.CertificateManager
+    );
+    if (certManagerProjectFromSplit) {
+      projectId = certManagerProjectFromSplit.id;
+    }
+
+    const { permission, ForbidOnInvalidProjectType } = await permissionService.getProjectPermission(
       actor,
       actorId,
       projectId,
       actorAuthMethod,
       actorOrgId
     );
+    ForbidOnInvalidProjectType(ProjectType.CertificateManager);
 
     ForbiddenError.from(permission).throwUnlessCan(
       ProjectPermissionActions.Read,

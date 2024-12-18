@@ -15,7 +15,6 @@ import {
   TProjectUserMembershipRolesInsert,
   TUsers
 } from "@app/db/schemas";
-import { TProjects } from "@app/db/schemas/projects";
 import { TGroupDALFactory } from "@app/ee/services/group/group-dal";
 import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TOidcConfigDALFactory } from "@app/ee/services/oidc/oidc-config-dal";
@@ -187,26 +186,27 @@ export const orgServiceFactory = ({
     return members;
   };
 
-  const findAllWorkspaces = async ({ actor, actorId, orgId }: TFindAllWorkspacesDTO) => {
-    const organizationWorkspaceIds = new Set((await projectDAL.find({ orgId })).map((workspace) => workspace.id));
-
-    let workspaces: (TProjects & { organization: string } & {
-      environments: {
-        id: string;
-        slug: string;
-        name: string;
-      }[];
-    })[];
-
-    if (actor === ActorType.USER) {
-      workspaces = await projectDAL.findAllProjects(actorId);
-    } else if (actor === ActorType.IDENTITY) {
-      workspaces = await projectDAL.findAllProjectsByIdentity(actorId);
-    } else {
-      throw new BadRequestError({ message: "Invalid actor type" });
+  const findOrgBySlug = async (slug: string) => {
+    const org = await orgDAL.findOrgBySlug(slug);
+    if (!org) {
+      throw new NotFoundError({ message: `Organization with slug '${slug}' not found` });
     }
 
-    return workspaces.filter((workspace) => organizationWorkspaceIds.has(workspace.id));
+    return org;
+  };
+
+  const findAllWorkspaces = async ({ actor, actorId, orgId, type }: TFindAllWorkspacesDTO) => {
+    if (actor === ActorType.USER) {
+      const workspaces = await projectDAL.findAllProjects(actorId, orgId, type || "all");
+      return workspaces;
+    }
+
+    if (actor === ActorType.IDENTITY) {
+      const workspaces = await projectDAL.findAllProjectsByIdentity(actorId, type);
+      return workspaces;
+    }
+
+    throw new BadRequestError({ message: "Invalid actor type" });
   };
 
   const addGhostUser = async (orgId: string, tx?: Knex) => {
@@ -268,13 +268,14 @@ export const orgServiceFactory = ({
     actorOrgId,
     actorAuthMethod,
     orgId,
-    data: { name, slug, authEnforced, scimEnabled, defaultMembershipRoleSlug, enforceMfa }
+    data: { name, slug, authEnforced, scimEnabled, defaultMembershipRoleSlug, enforceMfa, selectedMfaMethod }
   }: TUpdateOrgDTO) => {
     const appCfg = getConfig();
     const { permission } = await permissionService.getOrgPermission(actor, actorId, orgId, actorAuthMethod, actorOrgId);
     ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Edit, OrgPermissionSubjects.Settings);
 
     const plan = await licenseService.getPlan(orgId);
+    const currentOrg = await orgDAL.findOrgById(actorOrgId);
 
     if (enforceMfa !== undefined) {
       if (!plan.enforceMfa) {
@@ -291,7 +292,7 @@ export const orgServiceFactory = ({
     }
 
     if (authEnforced !== undefined) {
-      if (!plan?.samlSSO || !plan.oidcSSO)
+      if (!plan?.samlSSO && !plan.oidcSSO)
         throw new BadRequestError({
           message: "Failed to enforce/un-enforce SSO due to plan restriction. Upgrade plan to enforce/un-enforce SSO."
         });
@@ -305,6 +306,11 @@ export const orgServiceFactory = ({
             "Failed to enable/disable SCIM provisioning due to plan restriction. Upgrade plan to enable/disable SCIM provisioning."
         });
       ForbiddenError.from(permission).throwUnlessCan(OrgPermissionActions.Edit, OrgPermissionSubjects.Scim);
+      if (scimEnabled && !currentOrg.orgAuthMethod) {
+        throw new BadRequestError({
+          message: "Cannot enable SCIM when neither SAML or OIDC is configured."
+        });
+      }
     }
 
     if (authEnforced) {
@@ -333,7 +339,8 @@ export const orgServiceFactory = ({
       authEnforced,
       scimEnabled,
       defaultMembershipRole,
-      enforceMfa
+      enforceMfa,
+      selectedMfaMethod
     });
     if (!org) throw new NotFoundError({ message: `Organization with ID '${orgId}' not found` });
     return org;
@@ -1131,6 +1138,7 @@ export const orgServiceFactory = ({
     createIncidentContact,
     deleteIncidentContact,
     getOrgGroups,
-    listProjectMembershipsByOrgMembershipId
+    listProjectMembershipsByOrgMembershipId,
+    findOrgBySlug
   };
 };

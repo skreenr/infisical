@@ -1,3 +1,7 @@
+import {
+  TCreateProjectTemplateDTO,
+  TUpdateProjectTemplateDTO
+} from "@app/ee/services/project-template/project-template-types";
 import { SymmetricEncryption } from "@app/lib/crypto/cipher";
 import { TProjectPermission } from "@app/lib/types";
 import { ActorType } from "@app/services/auth/auth-type";
@@ -56,6 +60,7 @@ export enum EventType {
   DELETE_SECRETS = "delete-secrets",
   GET_WORKSPACE_KEY = "get-workspace-key",
   AUTHORIZE_INTEGRATION = "authorize-integration",
+  UPDATE_INTEGRATION_AUTH = "update-integration-auth",
   UNAUTHORIZE_INTEGRATION = "unauthorize-integration",
   CREATE_INTEGRATION = "create-integration",
   DELETE_INTEGRATION = "delete-integration",
@@ -90,6 +95,11 @@ export enum EventType {
   UPDATE_IDENTITY_OIDC_AUTH = "update-identity-oidc-auth",
   GET_IDENTITY_OIDC_AUTH = "get-identity-oidc-auth",
   REVOKE_IDENTITY_OIDC_AUTH = "revoke-identity-oidc-auth",
+  LOGIN_IDENTITY_JWT_AUTH = "login-identity-jwt-auth",
+  ADD_IDENTITY_JWT_AUTH = "add-identity-jwt-auth",
+  UPDATE_IDENTITY_JWT_AUTH = "update-identity-jwt-auth",
+  GET_IDENTITY_JWT_AUTH = "get-identity-jwt-auth",
+  REVOKE_IDENTITY_JWT_AUTH = "revoke-identity-jwt-auth",
   CREATE_IDENTITY_UNIVERSAL_AUTH_CLIENT_SECRET = "create-identity-universal-auth-client-secret",
   REVOKE_IDENTITY_UNIVERSAL_AUTH_CLIENT_SECRET = "revoke-identity-universal-auth-client-secret",
   GET_IDENTITY_UNIVERSAL_AUTH_CLIENT_SECRETS = "get-identity-universal-auth-client-secret",
@@ -192,7 +202,13 @@ export enum EventType {
   CMEK_ENCRYPT = "cmek-encrypt",
   CMEK_DECRYPT = "cmek-decrypt",
   UPDATE_EXTERNAL_GROUP_ORG_ROLE_MAPPINGS = "update-external-group-org-role-mapping",
-  GET_EXTERNAL_GROUP_ORG_ROLE_MAPPINGS = "get-external-group-org-role-mapping"
+  GET_EXTERNAL_GROUP_ORG_ROLE_MAPPINGS = "get-external-group-org-role-mapping",
+  GET_PROJECT_TEMPLATES = "get-project-templates",
+  GET_PROJECT_TEMPLATE = "get-project-template",
+  CREATE_PROJECT_TEMPLATE = "create-project-template",
+  UPDATE_PROJECT_TEMPLATE = "update-project-template",
+  DELETE_PROJECT_TEMPLATE = "delete-project-template",
+  APPLY_PROJECT_TEMPLATE = "apply-project-template"
 }
 
 interface UserActorMetadata {
@@ -342,6 +358,13 @@ interface GetWorkspaceKeyEvent {
 
 interface AuthorizeIntegrationEvent {
   type: EventType.AUTHORIZE_INTEGRATION;
+  metadata: {
+    integration: string;
+  };
+}
+
+interface UpdateIntegrationAuthEvent {
+  type: EventType.UPDATE_INTEGRATION_AUTH;
   metadata: {
     integration: string;
   };
@@ -880,6 +903,67 @@ interface UpdateIdentityOidcAuthEvent {
 
 interface GetIdentityOidcAuthEvent {
   type: EventType.GET_IDENTITY_OIDC_AUTH;
+  metadata: {
+    identityId: string;
+  };
+}
+
+interface LoginIdentityJwtAuthEvent {
+  type: EventType.LOGIN_IDENTITY_JWT_AUTH;
+  metadata: {
+    identityId: string;
+    identityJwtAuthId: string;
+    identityAccessTokenId: string;
+  };
+}
+
+interface AddIdentityJwtAuthEvent {
+  type: EventType.ADD_IDENTITY_JWT_AUTH;
+  metadata: {
+    identityId: string;
+    configurationType: string;
+    jwksUrl?: string;
+    jwksCaCert: string;
+    publicKeys: string[];
+    boundIssuer: string;
+    boundAudiences: string;
+    boundClaims: Record<string, string>;
+    boundSubject: string;
+    accessTokenTTL: number;
+    accessTokenMaxTTL: number;
+    accessTokenNumUsesLimit: number;
+    accessTokenTrustedIps: Array<TIdentityTrustedIp>;
+  };
+}
+
+interface UpdateIdentityJwtAuthEvent {
+  type: EventType.UPDATE_IDENTITY_JWT_AUTH;
+  metadata: {
+    identityId: string;
+    configurationType?: string;
+    jwksUrl?: string;
+    jwksCaCert?: string;
+    publicKeys?: string[];
+    boundIssuer?: string;
+    boundAudiences?: string;
+    boundClaims?: Record<string, string>;
+    boundSubject?: string;
+    accessTokenTTL?: number;
+    accessTokenMaxTTL?: number;
+    accessTokenNumUsesLimit?: number;
+    accessTokenTrustedIps?: Array<TIdentityTrustedIp>;
+  };
+}
+
+interface DeleteIdentityJwtAuthEvent {
+  type: EventType.REVOKE_IDENTITY_JWT_AUTH;
+  metadata: {
+    identityId: string;
+  };
+}
+
+interface GetIdentityJwtAuthEvent {
+  type: EventType.GET_IDENTITY_JWT_AUTH;
   metadata: {
     identityId: string;
   };
@@ -1618,6 +1702,46 @@ interface UpdateExternalGroupOrgRoleMappingsEvent {
   };
 }
 
+interface GetProjectTemplatesEvent {
+  type: EventType.GET_PROJECT_TEMPLATES;
+  metadata: {
+    count: number;
+    templateIds: string[];
+  };
+}
+
+interface GetProjectTemplateEvent {
+  type: EventType.GET_PROJECT_TEMPLATE;
+  metadata: {
+    templateId: string;
+  };
+}
+
+interface CreateProjectTemplateEvent {
+  type: EventType.CREATE_PROJECT_TEMPLATE;
+  metadata: TCreateProjectTemplateDTO;
+}
+
+interface UpdateProjectTemplateEvent {
+  type: EventType.UPDATE_PROJECT_TEMPLATE;
+  metadata: TUpdateProjectTemplateDTO & { templateId: string };
+}
+
+interface DeleteProjectTemplateEvent {
+  type: EventType.DELETE_PROJECT_TEMPLATE;
+  metadata: {
+    templateId: string;
+  };
+}
+
+interface ApplyProjectTemplateEvent {
+  type: EventType.APPLY_PROJECT_TEMPLATE;
+  metadata: {
+    template: string;
+    projectId: string;
+  };
+}
+
 export type Event =
   | GetSecretsEvent
   | GetSecretEvent
@@ -1630,6 +1754,7 @@ export type Event =
   | DeleteSecretBatchEvent
   | GetWorkspaceKeyEvent
   | AuthorizeIntegrationEvent
+  | UpdateIntegrationAuthEvent
   | UnauthorizeIntegrationEvent
   | CreateIntegrationEvent
   | DeleteIntegrationEvent
@@ -1683,6 +1808,11 @@ export type Event =
   | DeleteIdentityOidcAuthEvent
   | UpdateIdentityOidcAuthEvent
   | GetIdentityOidcAuthEvent
+  | LoginIdentityJwtAuthEvent
+  | AddIdentityJwtAuthEvent
+  | UpdateIdentityJwtAuthEvent
+  | GetIdentityJwtAuthEvent
+  | DeleteIdentityJwtAuthEvent
   | CreateEnvironmentEvent
   | GetEnvironmentEvent
   | UpdateEnvironmentEvent
@@ -1766,4 +1896,10 @@ export type Event =
   | CmekEncryptEvent
   | CmekDecryptEvent
   | GetExternalGroupOrgRoleMappingsEvent
-  | UpdateExternalGroupOrgRoleMappingsEvent;
+  | UpdateExternalGroupOrgRoleMappingsEvent
+  | GetProjectTemplatesEvent
+  | GetProjectTemplateEvent
+  | CreateProjectTemplateEvent
+  | UpdateProjectTemplateEvent
+  | DeleteProjectTemplateEvent
+  | ApplyProjectTemplateEvent;
